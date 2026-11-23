@@ -1,35 +1,32 @@
-# antigravity-prompt-bridge (CLIProxyAPI v8 Plugin)
+# Antigravity Prompt Bridge
 
-CLIProxyAPI v8 的 C ABI `RequestNormalizer` 插件，用于调整发往 Antigravity 的请求结构。测试覆盖本地宿主加载和协议转换，不验证上游对请求的接受情况。
+Antigravity Prompt Bridge 是一个 **CLIProxyAPI v8（CPA）请求规范化插件**。当客户端的 Agent 系统提示词随请求发往 Antigravity 时，插件可以保留提示词内容，只改变它在请求中的位置。
 
-## 请求转换与宿主兼容
+**实机对照：**在 Orchestrator + Gemini 4 Neon 的测试场景中，未加载插件时请求返回 HTTP 429；加载插件后，同一场景下多轮对话正常。这个结果只适用于已验证的场景。插件不增加配额、不改变限流策略，也不重试或改写 429 响应。
 
-1. **Chat Completions 兼容**：在 CPA 的 `request.normalize` 阶段处理已转换的 `system` 和 `developer` 消息。
-2. **修复 `sessionId` 跨会话撞车**：在将静态系统提示词插入 `request.contents[0]` 前，预先对首条真实用户消息计算 FNV-1a 64 位哈希写入 `request.sessionId`（若请求本身携带会话头，CPA 仍优先使用显式会话身份）。
-3. **保留 Claude 穿插思考能力**：自动识别 CPA 为 Claude 思考模型注入的 `Interleaved thinking is enabled...` 提示并保留在真 `systemInstruction` 内。
-4. **确认语语言自适应**：默认 `ack_language: auto`，英文提示词使用英文确认语，中文提示词使用中文确认语，消除纯英文编码场景下的中文偏置。
-5. **支持 `smart` 智能按需移位**：仅对超长提示词或命中第三方 Agent 特征词的请求执行移位，轻量自定义请求保留在原生 `systemInstruction` 。
-6. **可选单函数工具拆组**：`split_tool_groups: true` 时把 `request.tools` 的函数声明按单函数分组。
+## 工作原理
 
-## 编译方法
+插件注册为 CPA 的 C ABI `RequestNormalizer`，在 `request.normalize` 阶段处理 **已转换为 Antigravity 格式**的请求，而不是拦截客户端的原始 JSON。例如，OpenAI Chat Completions 的 `system` / `developer` 消息先由 CPA 转换，然后才由插件处理。
 
-### Windows (`amd64`，需要 MinGW-w64)
-如果 MinGW-w64 不在 `PATH` 最前面，请先调整 `PATH`。
+命中移位条件时，请求结构从左侧变为右侧（省略其他字段）：
 
-```powershell
-$env:CGO_ENABLED = "1"
-go build -trimpath -ldflags="-s -w" -buildmode=c-shared -buildvcs=false -o dist/antigravity-prompt-bridge.dll .
-```
+| 字段 | 转换前 | 转换后 |
+| --- | --- | --- |
+| `request.systemInstruction` | Agent 系统提示词 | Antigravity 的 296 字节 `<identity>` 前缀 + 桥接说明；CPA 的 Claude 穿插思考提示（如有）仍保留在这里 |
+| `request.contents` | 原始对话历史 | 合成 `user`（移入的系统提示词）→ 合成 `model`（确认语）→ 原始对话历史 |
+| `request.sessionId` | 可能缺失 | 保留已有值；缺失时，在移位前从原始对话中找到首个 `user` 文本片段，计算 FNV‑1a 64 位哈希 |
 
-### Linux (`amd64`)
-```bash
-CGO_ENABLED=1 GOAMD64=v1 CGO_CFLAGS="-march=x86-64" \
-  go build -trimpath -buildvcs=false -buildmode=c-shared -o dist/antigravity-prompt-bridge.so .
-```
+桥接说明要求模型把插入的第一条 `user` 消息当作会话指令，而把后续真正的用户消息当作任务。**移位后的提示词位于普通对话历史，不再是原生系统指令**；合成确认语也是适配器写入的，不是模型调用的结果。原始对话轮次的顺序和内容不变。
 
-## CLIProxyAPI `config.yaml` 配置示例
+`sessionId` 在移位前计算，是为了避免不同会话都因同一份静态提示词被插在最前面而得到相同的标识。它不是全局唯一 ID：相同的首段用户文本会产生相同的回退值；若 CPA 已从显式会话头派生出会话 ID，则优先使用后者。没有可用的用户文本时，插件不生成这个回退值。
 
-将编译产物放入 CPA 的 `plugins/` 目录后，在 `config.yaml` 中启用：
+**适用范围：**非 Antigravity 请求、明确标记为非 Agent 的请求、图像模型，以及带原生搜索工具但没有函数声明的请求不处理。没有非空 `contents` 数组、已带相同身份前缀的请求，以及专用搜索机器人提示词不做提示词移位。可选的工具拆组与提示词移位相互独立。
+
+## 安装与配置
+
+在 [GitHub Releases](https://github.com/ukiyo-dev/antigravity-prompt-bridge/releases) 下载与 **CPA 进程**的系统和架构匹配的 ZIP（Windows / Linux / macOS，`amd64` / `arm64`）。用 Release 的 `checksums.txt` 校验 ZIP，将根目录的 `.dll`、`.so` 或 `.dylib` 解压到 CPA 的插件目录。Linux 需要支持动态插件的 CPA，不能使用 `no-plugin` 变体。
+
+将以下片段合并到 CPA 的 `config.yaml`；已有 `plugins` 段时，不要重复添加顶层键。建议先保留默认策略，确认插件已注册，再按需要调整。
 
 ```yaml
 plugins:
@@ -39,34 +36,40 @@ plugins:
     antigravity-prompt-bridge:
       enabled: true
       priority: 10
-      # always: 所有非空 Agent 系统提示词一律移位
-      # smart:  仅对 >= smart_min_bytes 或命中 Claude Code/Codex/OMP 等特征的提示词移位
       mode: "always"
-      # auto | en | zh
       ack_language: "auto"
+      custom_ack_text: ""
       smart_min_bytes: 1200
       prefix_when_empty: false
       split_tool_groups: false
 ```
 
-## 本地验证（无需上游账号或网络请求）
+`plugins.enabled` 是 CPA 的插件系统总开关，`dir` 指定插件目录。实例级 `enabled` 控制此插件是否启用，`priority` 是 CPA 的调度字段；示例中的 `10` 不是桥接插件的必需值。
 
-`go test ./...` 包含 CPA 宿主加载临时动态库并执行转换流水线的集成测试。
-Windows 上运行测试和构建前都应按上文将 MinGW 的 `bin` 放在 `PATH` 最前面；
-即使 `gcc --version` 正常，未调整优先级时 `cgo` 仍可能只报 `exit status 2`。
+### 插件字段
 
-Windows 上也可以先构建到 `dist/`，不覆盖 CPA 正在使用的插件，再直接验证 C ABI：
+| 字段 | 类型 | 默认值 | 行为 |
+| --- | --- | --- | --- |
+| `mode` | 枚举 | `always` | `always`：对符合条件、存在可移位内容的请求执行移位。`smart`：只有合并后的可移位文本达到字节阈值，**或**命中 Agent 关键词时才移位；否则保留原生系统指令。关键词包含 `claude code`、`you are codex`、`you are omp`、`opencode` 等，不区分大小写。 |
+| `ack_language` | 枚举 | `auto` | 控制合成确认语。`en` 固定英文，`zh` 固定中文；`auto` 根据**被移位的提示词文本**中汉字占字母的比例选择中文，否则使用英文。它不是模型正常回复的语言设置。 |
+| `custom_ack_text` | 字符串 | `""` | 去掉首尾空白后若非空，直接作为合成确认语，优先于 `ack_language`。留空则使用内置确认语；仅在实际插入合成轮次时生效。 |
+| `smart_min_bytes` | 整数 | `1200` | 只在 `mode: smart` 下生效。合并后的可移位提示词文本按 **UTF‑8 字节**计数，达到阈值即命中；不是字符数或 token 数。设为 `0` 或负数会恢复为 `1200`。 |
+| `prefix_when_empty` | 布尔 | `false` | 对有原始对话、但没有可移位系统内容的请求，可仅补入 `<identity>` 前缀，不增加合成 `user` / `model` 轮次；保留适用的 Claude 穿插思考提示。它不会强制移位 `smart` 未命中的非空提示词。 |
+| `split_tool_groups` | 布尔 | `false` | 把 `request.tools` 中含多个函数声明的一组拆成多个单声明组。即使没有发生提示词移位，只要请求属于插件处理范围，仍可执行拆组。 |
 
-```powershell
-go build -trimpath -buildvcs=false -buildmode=c-shared -o dist/antigravity-prompt-bridge.dll .
+**怎么选：**复现问题或希望一致地桥接 Agent 提示词，先用默认的 `always`；如果希望短小的自定义系统提示词留在原生系统字段，改用 `smart`。没有明确需要时，保持 `prefix_when_empty` 和 `split_tool_groups` 关闭。
+
+## 开发与验证
+
+使用 `go.mod` 指定的 Go 版本和目标平台的 C 编译器。Windows 上若 `cgo` 只报 `exit status 2`，先检查正确架构的 MinGW-w64 / LLVM-MinGW 是否排在 `PATH` 前面。
+
+```text
+go test ./...
+go vet ./...
+go build -trimpath -buildvcs=false -ldflags="-s -w" -buildmode=c-shared -o dist/antigravity-prompt-bridge.dll .
 python testdata/native_abi_smoke.py dist/antigravity-prompt-bridge.dll
 ```
 
-Linux 上可将相同的 Python 脚本指向构建好的 `.so`。冒烟测试验证 ABI 版本检查、
-非法请求缓冲区的错误响应，以及失败后仍可正常注册插件。
+构建和测试前须启用 `CGO_ENABLED=1`；Linux 和 macOS 分别使用 `.so` 和 `.dylib`。本地测试覆盖 CPA 加载、请求转换和原生 ABI，无需上游账号。
 
-## GitHub Actions 与官方商店
-
-CI 对 Windows、Linux、macOS 的 `amd64` 和 `arm64` 分别构建 `c-shared` 动态库。每个平台用原生架构的 CPA 宿主集成测试和 ABI 冒烟测试验证同一份成品；Linux 额外检查 glibc 符号版本不高于 2.17。无标签的 CI 构建使用 `0.0.0`，不用于发布。
-
-发布候选以 `v<数字版本>` 标签触发，六个任务全部成功后，从 `verified-store-release` 下载产物。每个 ZIP 根目录只有 `<id>.<dll|so|dylib>`；`checksums.txt` 记录所有 ZIP 的 SHA-256。标签构建不会自动发布 Release。核对商店安装与加载后，再把这七个文件上传到同名 GitHub Release；商店登记只通过官方仓库的 `registry.json` PR 完成。
+CI 在六个平台上用 CPA 安装实际打包的 ZIP 并加载其中的动态库，Linux 额外核对 glibc 符号版本不高于 2.17。标签构建从 `v<数字版本>` 注入插件版本，生成六个根目录只含动态库的 ZIP 和一份 `checksums.txt`（`verified-store-release` 产物），不会自动发布 Release。
