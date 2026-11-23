@@ -2,6 +2,8 @@
 
 Antigravity Prompt Bridge 是一个 **CLIProxyAPI v8（CPA）请求规范化插件**。当客户端的 Agent 系统提示词随请求发往 Antigravity 时，插件可以保留提示词内容，只改变它在请求中的位置。
 
+**设计目的：**通过调整发往 Antigravity 的系统提示词结构，规避可能由请求结构触发的 HTTP 429 风控。插件只调整请求结构，不改变账号配额或服务端限流策略。
+
 ## 工作原理
 
 插件注册为 CPA 的 C ABI `RequestNormalizer`，在 `request.normalize` 阶段处理 **已转换为 Antigravity 格式**的请求，而不是拦截客户端的原始 JSON。例如，OpenAI Chat Completions 的 `system` / `developer` 消息先由 CPA 转换，然后才由插件处理。
