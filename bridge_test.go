@@ -13,6 +13,7 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	internalpluginhost "github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginstore"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/translator/builtin"
@@ -201,10 +202,23 @@ func TestLiveDynamicLibraryInCPAPluginHostAndTranslatorPipeline(t *testing.T) {
 	ext := internalpluginhost.PluginExtension(runtime.GOOS)
 	dllPath := filepath.Join(pluginDir, PluginName+ext)
 
-	buildCmd := exec.Command("go", "build", "-buildmode=c-shared", "-o", dllPath, ".")
-	buildCmd.Env = append(os.Environ(), "CGO_ENABLED=1")
-	if out, err := buildCmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build c-shared failed: %v\n%s", err, string(out))
+	if archivePath := os.Getenv("BRIDGE_TEST_ARCHIVE"); archivePath != "" {
+		archive, err := os.ReadFile(archivePath)
+		if err != nil {
+			t.Fatalf("read store archive: %v", err)
+		}
+		_, err = pluginstore.InstallArchive(archive, pluginstore.Plugin{
+			ID: PluginName, Version: os.Getenv("VERSION"),
+		}, pluginstore.InstallOptions{PluginsDir: pluginDir})
+		if err != nil {
+			t.Fatalf("CPA store install: %v", err)
+		}
+	} else {
+		buildCmd := exec.Command("go", "build", "-buildmode=c-shared", "-o", dllPath, ".")
+		buildCmd.Env = append(os.Environ(), "CGO_ENABLED=1")
+		if out, err := buildCmd.CombinedOutput(); err != nil {
+			t.Fatalf("go build c-shared failed: %v\n%s", err, string(out))
+		}
 	}
 
 	var rawNode yaml.Node

@@ -1,22 +1,41 @@
 name: Build
 
 on:
+  pull_request:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
   contents: read
 
+env:
+  CGO_ENABLED: '1'
+  GOAMD64: v1
+  GOTOOLCHAIN: local
+  GOFLAGS: -mod=readonly
+  MACOSX_DEPLOYMENT_TARGET: '12.0'
+
 jobs:
-  windows-amd64:
-    runs-on: windows-2025
-    timeout-minutes: 20
+  build:
+    name: ${{ matrix.os }}/${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows, arch: amd64, runner: windows-2025, ext: dll}
+          - {os: windows, arch: arm64, runner: windows-11-arm, ext: dll}
+          - {os: linux, arch: amd64, runner: ubuntu-24.04, ext: so, image: 'quay.io/pypa/manylinux2014_x86_64'}
+          - {os: linux, arch: arm64, runner: ubuntu-24.04-arm, ext: so, image: 'quay.io/pypa/manylinux2014_aarch64'}
+          - {os: darwin, arch: amd64, runner: macos-15-intel, ext: dylib}
+          - {os: darwin, arch: arm64, runner: macos-15, ext: dylib}
     env:
-      CGO_ENABLED: '1'
-      GOAMD64: v1
-      GOTOOLCHAIN: local
-      GOFLAGS: -mod=readonly
+      TARGET_OS: ${{ matrix.os }}
+      TARGET_ARCH: ${{ matrix.arch }}
+      LIBRARY: dist/antigravity-prompt-bridge.${{ matrix.ext }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -24,31 +43,108 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
-      - name: Select runner MinGW-w64
+      - name: Select MinGW-w64 on Windows amd64
+        if: matrix.os == 'windows' && matrix.arch == 'amd64'
         shell: pwsh
         run: |
           $mingw = Join-Path $env:SystemDrive 'mingw64/bin'
           if (-not (Test-Path (Join-Path $mingw 'gcc.exe'))) { throw 'MinGW-w64 not found on runner' }
           $mingw >> $env:GITHUB_PATH
-      - name: Test and build
+      - name: Install pinned LLVM-MinGW on Windows arm64
+        if: matrix.os == 'windows' && matrix.arch == 'arm64'
         shell: pwsh
         run: |
+          $name = 'llvm-mingw-20261117-ucrt-aarch64'
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          curl.exe --fail --location --retry 3 --output $zip "https://github.com/mstorsjo/llvm-mingw/releases/download/20261117/$name.zip"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne 'c7f56de1d7aca15196c19083a799205390397b8b87a825aec3485e1e4f3c2cdd') {
+            throw 'LLVM-MinGW checksum mismatch'
+          }
+          Expand-Archive -LiteralPath $zip -DestinationPath $env:RUNNER_TEMP
+          $bin = Join-Path $env:RUNNER_TEMP "$name/bin"
+          if (-not (Test-Path (Join-Path $bin 'aarch64-w64-mingw32-clang.exe'))) { throw 'ARM64 compiler not found' }
+          $bin >> $env:GITHUB_PATH
+          'CC=aarch64-w64-mingw32-clang' >> $env:GITHUB_ENV
+      - name: Set build version and check native Go target
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=0.0.0
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            version=${GITHUB_REF_NAME#v}
+          fi
+          [[ "$(go env GOOS)/$(go env GOARCH)" == "$TARGET_OS/$TARGET_ARCH" ]]
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Build Windows or macOS library
+        if: matrix.os != 'linux'
+        shell: bash
+        run: go build -trimpath -buildvcs=false -ldflags="-s -w -X main.pluginVersion=$VERSION" -buildmode=c-shared -o "$LIBRARY" .
+      - name: Build Linux library against glibc 2.17
+        if: matrix.os == 'linux'
+        shell: bash
+        env:
+          MANYLINUX_IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD:/src:ro" -v "$PWD/dist:/out" -w /src \
+            -v "$(go env GOROOT):/opt/go:ro" \
+            -e CGO_ENABLED -e GOAMD64 -e GOTOOLCHAIN -e GOFLAGS \
+            -e VERSION -e GOCACHE=/tmp/go-build -e GOMODCACHE=/tmp/go-mod \
+            "$MANYLINUX_IMAGE" bash -euc '
+              /opt/go/bin/go build -trimpath -buildvcs=false \
+                -ldflags="-s -w -X main.pluginVersion=$VERSION" \
+                -buildmode=c-shared -o /out/antigravity-prompt-bridge.so .
+            '
+          readelf --version-info "$LIBRARY" > "$RUNNER_TEMP/glibc-versions.txt"
+          max=$(sed -n 's/.*Name: GLIBC_\([0-9.]*\).*/\1/p' "$RUNNER_TEMP/glibc-versions.txt" | sort -V | tail -1)
+          [[ -n "$max" && "$(printf '2.17\n%s\n' "$max" | sort -V | tail -1)" == 2.17 ]]
+      - name: Package store ZIP
+        shell: bash
+        run: |
+          py=python3
+          if [[ "$TARGET_OS" == windows ]]; then py=python; fi
+          "$py" .github/scripts/store_assets.py "$VERSION" dist --os "$TARGET_OS" --arch "$TARGET_ARCH"
+      - name: Install ZIP through CPA, load and test the library
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=python3
+          if [[ "$TARGET_OS" == windows ]]; then py=python; fi
           go vet ./...
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -count=1 ./...
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go build -trimpath -buildvcs=false -ldflags='-s -w' -buildmode=c-shared -o dist/antigravity-prompt-bridge.dll .
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python testdata/native_abi_smoke.py dist/antigravity-prompt-bridge.dll
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Get-Item dist/antigravity-prompt-bridge.dll,dist/antigravity-prompt-bridge.h | ForEach-Object {
-            '{0}  {1}' -f (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant(), $_.Name
-          } | Set-Content -Encoding ascii -LiteralPath dist/SHA256SUMS.txt
+          BRIDGE_TEST_ARCHIVE="dist/antigravity-prompt-bridge_${VERSION}_${TARGET_OS}_${TARGET_ARCH}.zip" go test -count=1 ./...
+          "$py" testdata/native_abi_smoke.py "$LIBRARY" "$VERSION"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: antigravity-prompt-bridge-windows-amd64
+          name: store-${{ matrix.os }}-${{ matrix.arch }}
           if-no-files-found: error
-          path: |
-            dist/antigravity-prompt-bridge.dll
-            dist/antigravity-prompt-bridge.h
-            dist/SHA256SUMS.txt
+          path: dist/*.zip
+
+  verify:
+    name: Verify store assets
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: store-*
+          path: assets
+          merge-multiple: true
+      - name: Verify archive names, binary architectures and layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=0.0.0
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then version=${GITHUB_REF_NAME#v}; fi
+          python3 .github/scripts/store_assets.py "$version" assets
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verified-store-release
+          if-no-files-found: error
+          path: assets/*

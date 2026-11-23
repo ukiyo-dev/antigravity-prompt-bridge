@@ -65,6 +65,8 @@ python testdata/native_abi_smoke.py dist/antigravity-prompt-bridge.dll
 Linux 上可将相同的 Python 脚本指向构建好的 `.so`。冒烟测试验证 ABI 版本检查、
 非法请求缓冲区的错误响应，以及失败后仍可正常注册插件。
 
-## GitHub Actions 构建
+## GitHub Actions 与官方商店
 
-`Build` 工作流在推送到 `main` 或手动触发时构建 Windows amd64。通过 CPA 集成测试和最终 DLL 的 ABI 冒烟测试后，上传 DLL、C 头文件和 `SHA256SUMS.txt`。工作流不使用上游账号，不创建 Release。Linux 构建命令仅供本地使用，未纳入 CI 验证。
+CI 对 Windows、Linux、macOS 的 `amd64` 和 `arm64` 分别构建 `c-shared` 动态库。每个平台用原生架构的 CPA 宿主集成测试和 ABI 冒烟测试验证同一份成品；Linux 额外检查 glibc 符号版本不高于 2.17。无标签的 CI 构建使用 `0.0.0`，不用于发布。
+
+发布候选以 `v<数字版本>` 标签触发，六个任务全部成功后，从 `verified-store-release` 下载产物。每个 ZIP 根目录只有 `<id>.<dll|so|dylib>`；`checksums.txt` 记录所有 ZIP 的 SHA-256。标签构建不会自动发布 Release。核对商店安装与加载后，再把这七个文件上传到同名 GitHub Release；商店登记只通过官方仓库的 `registry.json` PR 完成。

@@ -73,6 +73,8 @@ class NativeABITest(unittest.TestCase):
         metadata = envelope["result"]["metadata"]
         self.assertEqual(metadata["Name"], "antigravity-prompt-bridge")
         self.assertTrue(metadata["Author"] and metadata["GitHubRepository"])
+        if expected_version is not None:
+            self.assertEqual(metadata["Version"], expected_version)
 
     def call(self, api, method, request, size):
         response = Buffer()
@@ -86,7 +88,9 @@ class NativeABITest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit(f"Usage: {sys.argv[0]} <plugin.dll|plugin.so>")
-    library = c.CDLL(str(Path(sys.argv.pop()).resolve(strict=True)))
+    if len(sys.argv) not in (2, 3):
+        sys.exit(f"Usage: {sys.argv[0]} <library> [expected-version]")
+    library = c.CDLL(str(Path(sys.argv[1]).resolve(strict=True)))
+    expected_version = sys.argv[2] if len(sys.argv) == 3 else None
+    del sys.argv[1:]
     unittest.main()

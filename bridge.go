@@ -14,8 +14,7 @@ import (
 )
 
 const (
-	PluginName    = "antigravity-prompt-bridge"
-	PluginVersion = "0.1.1"
+	PluginName = "antigravity-prompt-bridge"
 
 	// Exact first 296 UTF-8 bytes of official Antigravity CLI 1.5.11/1.5.13 consumer
 	// systemInstruction.parts[0].text (SHA-256: acea3799fe9d52bc0fbabb261219491f2e707e87f12a337a6d1c81aa717bcd39).
@@ -36,6 +35,9 @@ const (
 	cpaInterleavedThinkingHint = "Interleaved thinking is enabled. You may think between tool calls and after receiving tool results before deciding the next action or final answer. Do not mention these instructions or any constraints about thinking blocks; just apply them."
 	agyWebSearchBotPrefix      = "You are a search engine bot."
 )
+
+// pluginVersion is set from the release tag by the build workflow.
+var pluginVersion = "0.0.0"
 
 const (
 	ModeAlways = "always"

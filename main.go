@@ -179,7 +179,7 @@ func pluginRegistration() registration {
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             PluginName,
-			Version:          PluginVersion,
+			Version:          pluginVersion,
 			Author:           "ukiyo-dev",
 			GitHubRepository: "https://github.com/ukiyo-dev/antigravity-prompt-bridge",
 			ConfigFields: []pluginapi.ConfigField{
