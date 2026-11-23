@@ -70,6 +70,9 @@ class NativeABITest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(envelope["ok"])
         self.assertTrue(envelope["result"]["capabilities"]["request_normalizer"])
+        metadata = envelope["result"]["metadata"]
+        self.assertEqual(metadata["Name"], "antigravity-prompt-bridge")
+        self.assertTrue(metadata["Author"] and metadata["GitHubRepository"])
 
     def call(self, api, method, request, size):
         response = Buffer()
