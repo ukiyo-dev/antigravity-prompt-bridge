@@ -2,8 +2,7 @@
 
 Antigravity Prompt Bridge 是一个 **CLIProxyAPI v8（CPA）请求规范化插件**。当客户端的 Agent 系统提示词随请求发往 Antigravity 时，插件可以保留提示词内容，只改变它在请求中的位置。
 
-**设计目的：**通过调整发往 Antigravity 的系统提示词结构，规避可能由请求结构触发的 HTTP 429 风控。插件只调整请求结构，不改变账号配额或服务端限流策略。
-
+**目的：通过调整发往 Antigravity 的系统提示词结构，规避可能由请求结构触发的 HTTP 429 风控。** 
 ## 工作原理
 
 插件注册为 CPA 的 C ABI `RequestNormalizer`，在 `request.normalize` 阶段处理 **已转换为 Antigravity 格式**的请求，而不是拦截客户端的原始 JSON。例如，OpenAI Chat Completions 的 `system` / `developer` 消息先由 CPA 转换，然后才由插件处理。
@@ -20,7 +19,7 @@ Antigravity Prompt Bridge 是一个 **CLIProxyAPI v8（CPA）请求规范化插�
 
 `sessionId` 在移位前计算，是为了避免不同会话都因同一份静态提示词被插在最前面而得到相同的标识。它不是全局唯一 ID：相同的首段用户文本会产生相同的回退值；若 CPA 已从显式会话头派生出会话 ID，则优先使用后者。没有可用的用户文本时，插件不生成这个回退值。
 
-**适用范围：**非 Antigravity 请求、明确标记为非 Agent 的请求、图像模型，以及带原生搜索工具但没有函数声明的请求不处理。没有非空 `contents` 数组、已带相同身份前缀的请求，以及专用搜索机器人提示词不做提示词移位。可选的工具拆组与提示词移位相互独立。
+**排除范围：** 非 Antigravity 请求、明确标记为非 Agent 的请求、图像模型，以及带原生搜索工具但没有函数声明的请求不处理。没有非空 `contents` 数组、已带相同身份前缀的请求，以及专用搜索机器人提示词不做提示词移位。可选的工具拆组与提示词移位相互独立。
 
 ## 安装与配置
 
@@ -57,8 +56,6 @@ plugins:
 | `prefix_when_empty` | 布尔 | `false` | 对有原始对话、但没有可移位系统内容的请求，可仅补入 `<identity>` 前缀，不增加合成 `user` / `model` 轮次；保留适用的 Claude 穿插思考提示。它不会强制移位 `smart` 未命中的非空提示词。 |
 | `split_tool_groups` | 布尔 | `false` | 把 `request.tools` 中含多个函数声明的一组拆成多个单声明组。即使没有发生提示词移位，只要请求属于插件处理范围，仍可执行拆组。 |
 
-**怎么选：**复现问题或希望一致地桥接 Agent 提示词，先用默认的 `always`；如果希望短小的自定义系统提示词留在原生系统字段，改用 `smart`。没有明确需要时，保持 `prefix_when_empty` 和 `split_tool_groups` 关闭。
-
 ## 开发与验证
 
 使用 `go.mod` 指定的 Go 版本和目标平台的 C 编译器。Windows 上若 `cgo` 只报 `exit status 2`，先检查正确架构的 MinGW-w64 / LLVM-MinGW 是否排在 `PATH` 前面。
@@ -69,7 +66,3 @@ go vet ./...
 go build -trimpath -buildvcs=false -ldflags="-s -w" -buildmode=c-shared -o dist/antigravity-prompt-bridge.dll .
 python testdata/native_abi_smoke.py dist/antigravity-prompt-bridge.dll
 ```
-
-构建和测试前须启用 `CGO_ENABLED=1`；Linux 和 macOS 分别使用 `.so` 和 `.dylib`。本地测试覆盖 CPA 加载、请求转换和原生 ABI，无需上游账号。
-
-GitHub Actions 只在推送 `v*` 标签或手动触发时构建，不响应普通分支推送或 PR。CI 在六个平台上用 CPA 安装实际打包的 ZIP 并加载其中的动态库，Linux 额外核对 glibc 符号版本不高于 2.17。标签构建从 `v<数字版本>` 注入插件版本，生成六个根目录只含动态库的 ZIP 和一份 `checksums.txt`（`verified-store-release` 产物），不会自动发布 Release。
