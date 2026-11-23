@@ -253,6 +253,10 @@ func TestLiveDynamicLibraryInCPAPluginHostAndTranslatorPipeline(t *testing.T) {
 		t.Fatalf("RegisteredPlugins() = %+v, want [%s]", registered, PluginName)
 	}
 
+	if got := registered[0].Metadata.Name; got != pluginDisplayName {
+		t.Fatalf("loaded plugin name = %q, want %q", got, pluginDisplayName)
+	}
+
 	sdktranslator.SetPluginHooks(host)
 	pipeline := builtin.Pipeline()
 

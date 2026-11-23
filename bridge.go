@@ -14,7 +14,8 @@ import (
 )
 
 const (
-	PluginName = "antigravity-prompt-bridge"
+	PluginName        = "antigravity-prompt-bridge"
+	pluginDisplayName = "Antigravity Prompt Bridge"
 
 	// Exact first 296 UTF-8 bytes of official Antigravity CLI 1.5.11/1.5.13 consumer
 	// systemInstruction.parts[0].text (SHA-256: acea3799fe9d52bc0fbabb261219491f2e707e87f12a337a6d1c81aa717bcd39).

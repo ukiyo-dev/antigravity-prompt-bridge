@@ -71,7 +71,19 @@ class NativeABITest(unittest.TestCase):
         self.assertTrue(envelope["ok"])
         self.assertTrue(envelope["result"]["capabilities"]["request_normalizer"])
         metadata = envelope["result"]["metadata"]
-        self.assertEqual(metadata["Name"], "antigravity-prompt-bridge")
+        self.assertEqual(metadata["Name"], "Antigravity Prompt Bridge")
+        fields = metadata["ConfigFields"]
+        self.assertCountEqual(
+            [field["Name"] for field in fields],
+            ["mode", "ack_language", "custom_ack_text", "smart_min_bytes",
+             "prefix_when_empty", "split_tool_groups"],
+        )
+        for field in fields:
+            with self.subTest(field=field["Name"]):
+                # CPA HTML-escapes descriptions before sending them to the panel.
+                description = field["Description"]
+                self.assertRegex(description, r"[\u4e00-\u9fff]")
+                self.assertNotRegex(description, r"[&<>\x22\x27]")
         self.assertTrue(metadata["Author"] and metadata["GitHubRepository"])
         if expected_version is not None:
             self.assertEqual(metadata["Version"], expected_version)

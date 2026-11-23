@@ -72,4 +72,4 @@ python testdata/native_abi_smoke.py dist/antigravity-prompt-bridge.dll
 
 构建和测试前须启用 `CGO_ENABLED=1`；Linux 和 macOS 分别使用 `.so` 和 `.dylib`。本地测试覆盖 CPA 加载、请求转换和原生 ABI，无需上游账号。
 
-CI 在六个平台上用 CPA 安装实际打包的 ZIP 并加载其中的动态库，Linux 额外核对 glibc 符号版本不高于 2.17。标签构建从 `v<数字版本>` 注入插件版本，生成六个根目录只含动态库的 ZIP 和一份 `checksums.txt`（`verified-store-release` 产物），不会自动发布 Release。
+GitHub Actions 只在推送 `v*` 标签或手动触发时构建，不响应普通分支推送或 PR。CI 在六个平台上用 CPA 安装实际打包的 ZIP 并加载其中的动态库，Linux 额外核对 glibc 符号版本不高于 2.17。标签构建从 `v<数字版本>` 注入插件版本，生成六个根目录只含动态库的 ZIP 和一份 `checksums.txt`（`verified-store-release` 产物），不会自动发布 Release。
