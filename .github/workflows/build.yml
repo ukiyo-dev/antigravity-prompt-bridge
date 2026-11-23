@@ -1,0 +1,54 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-amd64:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      CGO_ENABLED: '1'
+      GOAMD64: v1
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: Select runner MinGW-w64
+        shell: pwsh
+        run: |
+          $mingw = Join-Path $env:SystemDrive 'mingw64/bin'
+          if (-not (Test-Path (Join-Path $mingw 'gcc.exe'))) { throw 'MinGW-w64 not found on runner' }
+          $mingw >> $env:GITHUB_PATH
+      - name: Test and build
+        shell: pwsh
+        run: |
+          go vet ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -count=1 ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -trimpath -buildvcs=false -ldflags='-s -w' -buildmode=c-shared -o dist/antigravity-prompt-bridge.dll .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python testdata/native_abi_smoke.py dist/antigravity-prompt-bridge.dll
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Item dist/antigravity-prompt-bridge.dll,dist/antigravity-prompt-bridge.h | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant(), $_.Name
+          } | Set-Content -Encoding ascii -LiteralPath dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: antigravity-prompt-bridge-windows-amd64
+          if-no-files-found: error
+          path: |
+            dist/antigravity-prompt-bridge.dll
+            dist/antigravity-prompt-bridge.h
+            dist/SHA256SUMS.txt

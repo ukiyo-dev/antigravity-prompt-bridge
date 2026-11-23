@@ -1,0 +1,17 @@
+/dist/
+/.ci/
+/.shadow/
+/go.work
+/go.work.sum
+/.env
+/.env.*
+/config.yaml
+/config.yml
+*.dll
+*.so
+*.dylib
+*.zip
+*.ndjson
+*.jsonl
+*.log
+__pycache__/
