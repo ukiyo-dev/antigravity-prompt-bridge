@@ -1,31 +1,36 @@
 # Antigravity Prompt Bridge
 
-Antigravity Prompt Bridge 是一个 **CLIProxyAPI v8（CPA）请求规范化插件**。当客户端的 Agent 系统提示词随请求发往 Antigravity 时，插件可以保留提示词内容，只改变它在请求中的位置。
+用于 **CLIProxyAPI v8（CPA）** 的请求规范化插件。
 
-**目的：通过调整发往 Antigravity 的系统提示词结构，规避可能由请求结构触发的 HTTP 429 风控。** 
-## 工作原理
+用 Claude Code、OpenCode、Codex 等第三方 Agent 通过 CPA 调用 Antigravity 时，客户端自带的大段系统提示词如果直接放进 `request.systemInstruction`，很容易触发上游的 **HTTP 429 风控**。这个插件会在请求发往上游前调整提示词的存放位置：保留原本的系统提示词内容不变，只把它从原生系统指令挪到对话历史开头，用来避开针对请求结构的风控拦截。
 
-插件注册为 CPA 的 C ABI `RequestNormalizer`，在 `request.normalize` 阶段处理 **已转换为 Antigravity 格式**的请求，而不是拦截客户端的原始 JSON。例如，OpenAI Chat Completions 的 `system` / `developer` 消息先由 CPA 转换，然后才由插件处理。
+## 它是怎么工作的
 
-命中移位条件时，请求结构从左侧变为右侧（省略其他字段）：
+插件实现了 CPA 的 C ABI `RequestNormalizer` 接口，挂在 `request.normalize` 阶段工作——也就是等 CPA 先把 OpenAI、Anthropic 等入口协议统一转换成 Antigravity 格式之后，再做最后一步结构调整。
 
-| 字段 | 转换前 | 转换后 |
+触发移位时，插件会对请求做三处改动：
+
+| 字段 | 改动前 | 改动后 |
 | --- | --- | --- |
-| `request.systemInstruction` | Agent 系统提示词 | Antigravity 的 296 字节 `<identity>` 前缀 + 桥接说明；CPA 的 Claude 穿插思考提示（如有）仍保留在这里 |
-| `request.contents` | 原始对话历史 | 合成 `user`（移入的系统提示词）→ 合成 `model`（确认语）→ 原始对话历史 |
-| `request.sessionId` | 可能缺失 | 保留已有值；缺失时，在移位前从原始对话中找到首个 `user` 文本片段，计算 FNV‑1a 64 位哈希 |
+| `request.systemInstruction` | 客户端的 Agent 系统提示词 | Antigravity 官方 CLI 的 296 字节 `<identity>` 前缀 + 桥接说明（若 CPA 注入了 Claude 穿插思考提示，仍保留在此处） |
+| `request.contents` | 原始对话历史 | 合成 `user`（原系统提示词）→ 合成 `model`（简短确认语）→ 原始对话历史 |
+| `request.sessionId` | 可能为空 | 已有值则保留；为空时，在挪动提示词**之前**取首条真实 `user` 文本计算 FNV-1a 64 位哈希填入 |
 
-桥接说明要求模型把插入的第一条 `user` 消息当作会话指令，而把后续真正的用户消息当作任务。**移位后的提示词位于普通对话历史，不再是原生系统指令**；合成确认语也是适配器写入的，不是模型调用的结果。原始对话轮次的顺序和内容不变。
+桥接说明会告诉模型：把紧接着的第一条 `user` 消息当作当前会话的指令来遵守，后面的用户消息才是具体任务。之所以要在移位前先算好 `sessionId`，是因为一旦把同一份静态提示词塞到 `contents[0]`，不同会话按首轮文本算出来的回退 ID 就会全部撞车。如果 CPA 已从请求头派生出会话 ID，仍以 CPA 的为准；请求里找不到可用用户文本时则不填这个回退值。
 
-`sessionId` 在移位前计算，是为了避免不同会话都因同一份静态提示词被插在最前面而得到相同的标识。它不是全局唯一 ID：相同的首段用户文本会产生相同的回退值；若 CPA 已从显式会话头派生出会话 ID，则优先使用后者。没有可用的用户文本时，插件不生成这个回退值。
+这里有一个已知取舍：**挪到 `contents` 里的提示词本质上成了普通对话历史，不再是原生 `systemInstruction`**，合成的 `model` 确认语也是插件直接填进去的占位内容，后续真实对话的顺序和内容保持原样。
 
-**排除范围：** 非 Antigravity 请求、明确标记为非 Agent 的请求、图像模型，以及带原生搜索工具但没有函数声明的请求不处理。没有非空 `contents` 数组、已带相同身份前缀的请求，以及专用搜索机器人提示词不做提示词移位。可选的工具拆组与提示词移位相互独立。
+插件只处理发往 Antigravity 的 Agent 请求。以下情况会直接跳过，不做提示词移位：
+
+- 非 Antigravity 格式的请求，或明确标记为非 Agent 的请求
+- 图像模型，以及只挂了原生联网搜索但没有任何函数声明的请求
+- `contents` 为空、已经带有相同 `<identity>` 前缀，或属于专用搜索机器人的提示词
 
 ## 安装与配置
 
-在 [GitHub Releases](https://github.com/ukiyo-dev/antigravity-prompt-bridge/releases) 下载与 **CPA 进程**的系统和架构匹配的 ZIP（Windows / Linux / macOS，`amd64` / `arm64`）。用 Release 的 `checksums.txt` 校验 ZIP，将根目录的 `.dll`、`.so` 或 `.dylib` 解压到 CPA 的插件目录。Linux 需要支持动态插件的 CPA，不能使用 `no-plugin` 变体。
+去 [GitHub Releases](https://github.com/ukiyo-dev/antigravity-prompt-bridge/releases) 下载和 **CPA 所在机器**系统及架构对应的压缩包（支持 Windows / Linux / macOS 的 `amd64` 与 `arm64`），对照 `checksums.txt` 校验无误后，把里面的 `.dll`、`.so` 或 `.dylib` 解压到 CPA 的插件目录。注意 Linux 下需要使用支持动态插件的 CPA 构建，`no-plugin` 变体无法加载。
 
-将以下片段合并到 CPA 的 `config.yaml`；已有 `plugins` 段时，不要重复添加顶层键。建议先保留默认策略，确认插件已注册，再按需要调整。
+接着在 CPA 的 `config.yaml` 中加入插件配置（如果文件里已经有 `plugins` 段，合并进去即可，不要重复写顶层键）。建议先用默认配置确认插件能正常加载，再按需调整参数：
 
 ```yaml
 plugins:
@@ -43,26 +48,30 @@ plugins:
       split_tool_groups: false
 ```
 
-`plugins.enabled` 是 CPA 的插件系统总开关，`dir` 指定插件目录。实例级 `enabled` 控制此插件是否启用，`priority` 是 CPA 的调度字段；示例中的 `10` 不是桥接插件的必需值。
+其中 `plugins.enabled` 和 `dir` 是 CPA 本身的插件总开关与目录设置；下面的 `enabled` 控制当前插件是否启用，`priority` 是 CPA 的执行优先级（示例里的 `10` 只是参考值，按你的插件链顺序调整即可）。
 
-### 插件字段
+### 配置项说明
 
-| 字段 | 类型 | 默认值 | 行为 |
-| --- | --- | --- | --- |
-| `mode` | 枚举 | `always` | `always`：对符合条件、存在可移位内容的请求执行移位。`smart`：只有合并后的可移位文本达到字节阈值，**或**命中 Agent 关键词时才移位；否则保留原生系统指令。关键词包含 `claude code`、`you are codex`、`you are omp`、`opencode` 等，不区分大小写。 |
-| `ack_language` | 枚举 | `auto` | 控制合成确认语。`en` 固定英文，`zh` 固定中文；`auto` 根据**被移位的提示词文本**中汉字占字母的比例选择中文，否则使用英文。它不是模型正常回复的语言设置。 |
-| `custom_ack_text` | 字符串 | `""` | 去掉首尾空白后若非空，直接作为合成确认语，优先于 `ack_language`。留空则使用内置确认语；仅在实际插入合成轮次时生效。 |
-| `smart_min_bytes` | 整数 | `1200` | 只在 `mode: smart` 下生效。合并后的可移位提示词文本按 **UTF‑8 字节**计数，达到阈值即命中；不是字符数或 token 数。设为 `0` 或负数会恢复为 `1200`。 |
-| `prefix_when_empty` | 布尔 | `false` | 对有原始对话、但没有可移位系统内容的请求，可仅补入 `<identity>` 前缀，不增加合成 `user` / `model` 轮次；保留适用的 Claude 穿插思考提示。它不会强制移位 `smart` 未命中的非空提示词。 |
-| `split_tool_groups` | 布尔 | `false` | 把 `request.tools` 中含多个函数声明的一组拆成多个单声明组。即使没有发生提示词移位，只要请求属于插件处理范围，仍可执行拆组。 |
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `mode` | `"always"` | 移位策略。`always` 会处理所有符合条件且非空的系统提示词；`smart` 只在提示词达到字节阈值，**或**命中常见编程 Agent 特征词（如 `claude code`、`opencode`、`you are codex`、`you are omp` 等，不区分大小写）时才移位，普通短提示词保持原样。 |
+| `ack_language` | `"auto"` | 合成 `model` 轮确认语的语言。`en` 固定英文，`zh` 固定中文，`auto` 根据**被挪走的系统提示词**里的汉字占比自动判断。这只影响那句占位的确认语，不影响模型正常回复的语言。 |
+| `custom_ack_text` | `""` | 自定义确认语文案。去掉首尾空白后非空时会覆盖 `ack_language`；留空则使用内置文案。仅在实际插入合成轮次时生效。 |
+| `smart_min_bytes` | `1200` | 仅在 `mode: "smart"` 下生效，按合并后可移位提示词的 **UTF-8 字节数**计算（不是字符数或 token 数）。填 `0` 或负数会自动回退为 `1200`。 |
+| `prefix_when_empty` | `false` | 开启后，如果请求有对话内容但没有可移位的系统提示词，也会单独给 `systemInstruction` 补上 `<identity>` 前缀（不插入合成对话轮次，已有 Claude 穿插思考提示会保留）。它不会把 `smart` 模式判定无需处理的非空提示词强行挪走。 |
+| `split_tool_groups` | `false` | 将 `request.tools` 中包含多个函数声明的工具组拆成多个单声明组，对齐新版官方 CLI 的请求结构。该选项独立于提示词移位，只要请求在插件处理范围内就会生效。 |
 
-## 开发与验证
+## 本地构建
 
-使用 `go.mod` 指定的 Go 版本和目标平台的 C 编译器。Windows 上若 `cgo` 只报 `exit status 2`，先检查正确架构的 MinGW-w64 / LLVM-MinGW 是否排在 `PATH` 前面。
+需要安装 `go.mod` 指定的 Go 版本以及目标平台对应的 C 编译器（依赖 `cgo`）。Windows 下如果编译只报一句 `cgo: exit status 2`，优先检查 `PATH` 里排在前面的 MinGW-w64 或 LLVM-MinGW 架构是否匹配。
 
-```text
+```bash
 go test ./...
 go vet ./...
 go build -trimpath -buildvcs=false -ldflags="-s -w" -buildmode=c-shared -o dist/antigravity-prompt-bridge.dll .
 python testdata/native_abi_smoke.py dist/antigravity-prompt-bridge.dll
 ```
+
+## 致谢
+
+系统提示词移位与工具组拆分的思路来源于 [StraviaPlatform](https://github.com/Stravia-AI/StraviaPlatform)。
