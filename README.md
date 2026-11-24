@@ -28,9 +28,11 @@
 
 ## 安装与配置
 
-去 [GitHub Releases](https://github.com/ukiyo-dev/antigravity-prompt-bridge/releases) 下载和 **CPA 所在机器**系统及架构对应的压缩包（支持 Windows / Linux / macOS 的 `amd64` 与 `arm64`），对照 `checksums.txt` 校验无误后，把里面的 `.dll`、`.so` 或 `.dylib` 解压到 CPA 的插件目录。注意 Linux 下需要使用支持动态插件的 CPA 构建，`no-plugin` 变体无法加载。
+插件已上架 CPA 官方插件商店，直接在插件商店搜索 `Antigravity Prompt Bridge`（或 `antigravity-prompt-bridge`）安装即可。
 
-接着在 CPA 的 `config.yaml` 中加入插件配置（如果文件里已经有 `plugins` 段，合并进去即可，不要重复写顶层键）。建议先用默认配置确认插件能正常加载，再按需调整参数：
+如果需要手动安装，可以去 [GitHub Releases](https://github.com/ukiyo-dev/antigravity-prompt-bridge/releases) 下载和 **CPA 所在机器**系统及架构对应的压缩包（支持 Windows / Linux / macOS 的 `amd64` 与 `arm64`），对照 `checksums.txt` 校验无误后，把里面的 `.dll`、`.so` 或 `.dylib` 解压到 CPA 的插件目录。注意无论哪种安装方式，Linux 下都需要使用支持动态插件的 CPA 构建，`no-plugin` 变体无法加载。
+
+手动编辑 `config.yaml` 时，可按下面的片段合并配置（如果文件里已经有 `plugins` 段，合并进去即可，不要重复写顶层键）。建议先用默认配置确认插件能正常加载，再按需调整参数：
 
 ```yaml
 plugins:
